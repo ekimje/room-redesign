@@ -14,8 +14,11 @@
 ## 진행 상태
 - **M0** 스캐폴드 + 설계도 ✔
 - **M1 / M1.5** 바닥 호모그래피 · 1m 그리드 오버레이 · 면적 측정 + 몬테카를로 오차범위 ✔
-- **M2** GrabCut 물체 분리(박스/스크리블) + RGBA 컷아웃 + 배경 인페인팅 ✔
-- 다음: M3 (컷아웃을 바닥에 배치 · 드래그 · 원근 크기 보정 · 그림자)
+- **M2** GrabCut 물체 분리(박스/스크리블) + RGBA 컷아웃 + 배경 인페인팅(LaMa 기본) ✔
+- **M3** 컷아웃을 바닥에 배치 · 드래그 · 원근 크기 보정 · 깊이 정렬 가림 · 소프트 그림자 ✔
+- 다음: M4 (다물체 장면 왕복 · 가림 규칙 정식화)
+
+진행 상세 기록: [docs/PROGRESS.md](docs/PROGRESS.md)
 
 ## 설치
 Python 3.12 가 PATH 에 없으면 전체 경로를 쓰세요:
@@ -24,10 +27,13 @@ Python 3.12 가 PATH 에 없으면 전체 경로를 쓰세요:
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.txt        # 경량 (Telea 인페인팅)
+pip install -r requirements-ml.txt     # LaMa 인페인팅 (권장, torch 포함 ~200MB)
 pip install -e .
 pytest -q
 ```
+LaMa 미설치 시 `inpaint(method="auto")` 는 자동으로 Telea 로 폴백합니다.
+torch 생태계 때문에 numpy 는 <2 로 고정됩니다.
 
 ## 실행 (M1)
 ```bash
@@ -45,7 +51,18 @@ python scripts/02_segment.py data/input/room01.jpg --scene data/output/room01.sc
 ```
 창 조작: 물체를 박스로 드래그 → GrabCut · `f`/`b` 브러시 전환 후 좌클릭으로 보정 · `i` 인페인팅 미리보기 · `s` 저장 · `q` 종료
 저장물: `data/output/cutouts/<이름>_objN.png` (RGBA), `data/output/<이름>_inpainted.png`, scene.json 에 물체 추가.
-큰 평면 배경은 Telea 자국이 남을 수 있음 → `pip install -r requirements-ml.txt` 후 `inpaint_lama` 사용.
+큰 평면 배경은 Telea 자국이 남을 수 있음 → LaMa(requirements-ml.txt) 설치 시 자동 사용.
+
+## 실행 (M3)
+```bash
+python scripts/03_arrange.py data/output/방사진.scene.json
+```
+창 조작: 베이스 점 근처 클릭으로 선택 → 드래그로 바닥 이동 · `[`/`]` 스케일 · `,`/`.` 회전 · `g` 그림자 · `s` 저장(scene.json + `*.render.png`) · `q` 종료
+
+## 엔드투엔드 데모 (GUI 없이)
+```bash
+python scripts/demo_pipeline.py   # -> data/output/demo_pipeline.png
+```
 
 ## 구조
 ```

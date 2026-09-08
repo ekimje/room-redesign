@@ -1,10 +1,14 @@
 # 선택(딥러닝) extras — DESIGN.md 5.2
-# 기본 설치에는 포함하지 않음. 필요할 때만:
+# 기본 인페인팅(LaMa)에는 simple-lama-inpainting 만 있으면 된다:
 #   pip install -r requirements-ml.txt
+# SAM / YOLO 는 M7 이후에만 필요.
 -r requirements.txt
 
-torch>=2.2
-torchvision>=0.17
-segment-anything>=1.0
-ultralytics>=8.1
+# LaMa 배경 인페인팅 (기본 method="auto" 가 설치돼 있으면 자동 사용)
 simple-lama-inpainting>=0.1.2
+torch>=2.2
+
+# M7+ (원클릭/자동 세그멘테이션) — 필요할 때 주석 해제
+# torchvision>=0.17
+# segment-anything>=1.0
+# ultralytics>=8.1

@@ -56,6 +56,7 @@ class SceneObject(BaseModel):
     asset: str
     placement: Placement
     original_floor_xy: Optional[tuple[float, float]] = None
+    anchor_px: Optional[tuple[float, float]] = None      # 스프라이트 내부 바닥 접촉점
     footprint_m: Optional[tuple[float, float]] = None
     footprint_source: Optional[Literal["spec", "photo_estimate"]] = None
     z_order_hint: Optional[int] = None

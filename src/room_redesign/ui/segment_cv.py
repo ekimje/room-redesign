@@ -22,7 +22,7 @@ from typing import Optional
 import numpy as np
 
 from ..compositing import inpaint
-from ..geometry import image_to_floor, invert
+from ..geometry import estimate_footprint_m, image_to_floor, invert
 from ..io_utils import load_image_rgb
 from ..scene import Placement, SceneObject
 from ..scene import load_scene, save_scene
@@ -52,7 +52,15 @@ class SegState:
     fg_pts: list[tuple[float, float]] = field(default_factory=list)
     bg_pts: list[tuple[float, float]] = field(default_factory=list)
     show_inpaint: bool = False
+    inpaint_cache: Optional[np.ndarray] = None            # 마스크 바뀌면 무효화
     saved_count: int = 0
+
+    def get_inpaint(self) -> Optional[np.ndarray]:
+        if self.mask is None:
+            return None
+        if self.inpaint_cache is None:
+            self.inpaint_cache = inpaint(self.image_rgb, self.mask)
+        return self.inpaint_cache
 
 
 def _fit_scale(h: int, w: int) -> float:
@@ -70,6 +78,7 @@ def _run_grabcut(state: SegState) -> None:
             base = grabcut_rect(state.image_rgb, state.rect)
         m = grabcut_refine(state.image_rgb, base, state.fg_pts, state.bg_pts)
     state.mask = clean_mask(m)
+    state.inpaint_cache = None
 
 
 def _draw(state: SegState):
@@ -81,7 +90,7 @@ def _draw(state: SegState):
     s = state.disp_scale
 
     if state.show_inpaint and state.mask is not None:
-        bg = inpaint(state.image_rgb, state.mask)
+        bg = state.get_inpaint()
         disp = cv2.cvtColor(bg, cv2.COLOR_RGB2BGR)
         disp = cv2.resize(disp, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
         cv2.putText(disp, "inpaint preview (i)", (10, 24),
@@ -130,7 +139,7 @@ def _save(state: SegState) -> None:
     cutout_path = state.out_dir / "cutouts" / f"{oid}.png"
     save_cutout_png(cutout, cutout_path)
 
-    bg = inpaint(state.image_rgb, state.mask)
+    bg = state.get_inpaint()
     from PIL import Image
 
     bg_path = state.out_dir / f"{stem}_inpainted.png"
@@ -143,9 +152,13 @@ def _save(state: SegState) -> None:
     if state.scene_path and state.scene_path.exists():
         scene = load_scene(state.scene_path)
         floor_xy = (0.0, 0.0)
+        footprint = None
         if scene.room.floor_homography is not None:
             h_i2w = invert(np.asarray(scene.room.floor_homography))
             floor_xy = tuple(image_to_floor(h_i2w, [cutout.base_point])[0].tolist())
+            footprint = estimate_footprint_m(h_i2w, cutout.bbox)
+        bx, by = cutout.base_point
+        x, y, _, _ = cutout.bbox
         scene.objects.append(
             SceneObject(
                 id=oid,
@@ -153,6 +166,9 @@ def _save(state: SegState) -> None:
                 asset=str(cutout_path),
                 placement=Placement(floor_xy=floor_xy),
                 original_floor_xy=floor_xy,
+                anchor_px=(bx - x, by - y),
+                footprint_m=footprint,
+                footprint_source="photo_estimate" if footprint else None,
             )
         )
         scene.background = str(bg_path)

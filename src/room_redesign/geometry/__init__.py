@@ -16,6 +16,7 @@ from .metrology import (
     rectangle_world_corners,
     scale_from_known_segment,
 )
+from .place import anchor_in_sprite, base_to_floor, estimate_footprint_m
 from .uncertainty import Estimate, monte_carlo, monte_carlo_polygon_area
 
 __all__ = [
@@ -31,6 +32,9 @@ __all__ = [
     "FloorCalibration",
     "rectangle_world_corners",
     "scale_from_known_segment",
+    "base_to_floor",
+    "estimate_footprint_m",
+    "anchor_in_sprite",
     "Estimate",
     "monte_carlo",
     "monte_carlo_polygon_area",

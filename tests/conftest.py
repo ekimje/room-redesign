@@ -53,3 +53,25 @@ def synthetic_object():
 
     rect = (135, 65, 155, 190)  # 물체를 여유 있게 감싸는 박스
     return img, true_mask, rect
+
+
+@pytest.fixture
+def room_homography():
+    """800x600 이미지에 4x3 m 방을 담는 바닥 호모그래피. (h_w2i, (W,H)px, (W,L)m)."""
+    from room_redesign.geometry import rectangle_world_corners, solve_floor_homography
+
+    room_w, room_l = 4.0, 3.0
+    image_corners = np.array(
+        [[120, 520], [680, 520], [560, 240], [240, 240]], dtype=float
+    )  # near 가 넓고 아래, far 가 좁고 위
+    h_w2i = solve_floor_homography(rectangle_world_corners(room_w, room_l), image_corners)
+    return h_w2i, (800, 600), (room_w, room_l)
+
+
+@pytest.fixture
+def red_sprite():
+    """40x60 불투명 빨강 RGBA, 바닥 접촉점 = 하단 중앙."""
+    spr = np.zeros((60, 40, 4), np.uint8)
+    spr[..., 0] = 220
+    spr[..., 3] = 255
+    return spr, (20.0, 60.0)  # rgba, anchor_xy

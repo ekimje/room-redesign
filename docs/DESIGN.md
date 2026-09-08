@@ -166,8 +166,9 @@
 
 ### 3.6 합성 / 렌더러 (`compositing/`)
 - **배경 인페인팅** (`inpaint.py`): 원본에서 물체를 들어낸 마스크 영역을 채움.
-  - 기본: `cv2.inpaint` (Telea / NS).
-  - 옵션: `simple-lama-inpainting` (품질↑, torch 필요).
+  - 기본(권장): **LaMa** (`simple-lama-inpainting`, `method="auto"` 가 설치 시 자동 사용).
+  - 폴백: `cv2.inpaint` (Telea / NS) — 의존성 없음, LaMa 미설치 시.
+  - torch 는 `requirements-ml.txt` 에만 두고, 런타임은 없으면 Telea 로 자동 폴백.
 - **원근 크기 보정** (`renderer.py`):
   - 새 바닥 좌표 `X'` → 밑면 픽셀 `p' = H⁻¹ X'`.
   - 스케일 = (`X'`에서 앞으로 1m 이동한 점의 픽셀 거리) / (원래 위치에서의 픽셀 거리).
@@ -275,9 +276,9 @@ room-redesign/
 │       │   └── graph.py          # 저장/불러오기, 정렬
 │       ├── compositing/
 │       │   ├── __init__.py
-│       │   ├── inpaint.py
-│       │   ├── shadow.py
-│       │   └── renderer.py
+│       │   ├── inpaint.py        # LaMa 기본(auto) / Telea·NS 폴백
+│       │   ├── shadow.py         # 발자국 타원 워프 + 블러 곱하기
+│       │   └── renderer.py       # 2.5D 스프라이트: 원근 스케일·깊이 정렬·알파 합성
 │       ├── viewer3d/             # 이후 단계
 │       │   └── web_export.py
 │       └── ui/
@@ -338,7 +339,7 @@ s(X') = || H·(X' + forward·1m) − H·X' ||_px  ÷  || H·(X0 + forward·1m) �
 | **M1** | 이미지 로드 + 바닥 코너 4점 클릭 → 호모그래피 → 바닥 1m 그리드 오버레이 | 그리드가 바닥에 원근 맞게 그려짐 |
 | **M1.5** | 스케일 기준 입력 → 바닥 면적 계산 + 몬테카를로 오차범위 | 합성 테스트 이미지에서 참값 대비 오차 ±15% 이내, `값 ± σ` 출력 |
 | **M2** | GrabCut으로 물체 1개 잘라내기 + 배경 인페인팅 | RGBA cutout 저장, 구멍이 티 안 나게 메워짐 ✔ (Telea 기본, 큰 평면은 LaMa 권장) |
-| **M3** | cutout을 바닥 위에 배치, 드래그 이동 + 원근 스케일 + 그림자 | 앞으로 끌면 커지고 뒤로 끌면 작아짐 |
+| **M3** | cutout을 바닥 위에 배치, 드래그 이동 + 원근 스케일 + 그림자 | 앞으로 끌면 커지고 뒤로 끌면 작아짐 ✔ (깊이 v 정렬 가림, 소프트 그림자, yaw 는 평면 근사) |
 | **M4** | 장면 그래프 JSON 저장/불러오기, 다물체 + 깊이 정렬 가림 | scene.json 왕복, 겹칠 때 앞뒤 정확 |
 | **M5** | PySide6 편집 UI (속성 패널, 물체 목록, 내보내기) | 마우스만으로 재배치 가능 |
 | **M6** | 외부 가구 PNG 불러와 footprint 지정 후 배치 | 새 가구가 방 원근에 맞게 배치됨 |
