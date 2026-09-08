@@ -1,0 +1,10 @@
+# 선택(딥러닝) extras — DESIGN.md 5.2
+# 기본 설치에는 포함하지 않음. 필요할 때만:
+#   pip install -r requirements-ml.txt
+-r requirements.txt
+
+torch>=2.2
+torchvision>=0.17
+segment-anything>=1.0
+ultralytics>=8.1
+simple-lama-inpainting>=0.1.2

@@ -1,0 +1,312 @@
+# room-redesign — 설계도 (Design Document)
+
+> 방 사진 한 장을 찍어서 가구·소품을 분리하고, 실제 방 구조 위에서 인테리어 게임처럼
+> 재배치해 보는 도구. 가구/인형 등을 **구매하기 전에** 우리 집에 어떻게 놓일지 미리 확인하는 것이 목표.
+
+- 작성일: 2026-09-08
+- 언어: Python 3.10+
+- 핵심 라이브러리: OpenCV, NumPy (+ 3D 변환/렌더 툴)
+- 접근 방식: **경량 우선** — 딥러닝 의존 없이 먼저 동작, SAM/YOLO 등은 이후 단계 옵션
+
+---
+
+## 1. 목표와 범위
+
+### 1.1 사용자 시나리오
+1. 사용자가 방을 한 장(또는 여러 장) 촬영한다.
+2. 도구가 방의 바닥/벽 구조를 대략적으로 추정한다(맨해튼 월드 가정 + 수동 보정).
+3. 사용자가 옮기고 싶은 물체(소파, 의자, 인형 등)를 지정하면 잘라낸다(cutout).
+4. 잘라낸 자리(구멍)는 배경으로 자연스럽게 메운다(inpaint).
+5. 사용자가 물체를 바닥 평면 위에서 드래그해 옮기고 회전한다.
+   - 원근에 맞춰 크기가 자동 조정되고, 바닥 그림자가 생기고, 앞뒤 가림(occlusion)이 처리된다.
+6. 새 가구 이미지를 불러와 같은 방식으로 방에 배치해 본다.
+7. 장면(scene)을 JSON으로 저장/불러오기 하고, 결과 이미지를 내보낸다.
+
+### 1.2 이번 프로젝트에서 하는 것
+- 단일 이미지 기반 **2.5D** 재배치 (바닥 평면 호모그래피 기반)
+- 대화형 세그멘테이션 (GrabCut, 클릭/박스 기반)
+- 배경 인페인팅, 원근 크기 보정, 소프트 그림자, 깊이 정렬 가림 처리
+- 장면 그래프(JSON) 저장/불러오기
+- PyQt 기반 편집 UI + OpenCV 프리뷰
+
+### 1.3 하지 않는 것 (Non-goals, 최소 초기 범위)
+- 완전 자동 3D 재구성 / 포토리얼 렌더링
+- 물리적으로 정확한 조명·반사 시뮬레이션
+- 모바일 앱, 클라우드 서비스
+- 다중 이미지 SfM 재구성 (이후 확장 후보)
+
+---
+
+## 2. 시스템 개요
+
+```
+┌─────────────┐   ┌──────────────────┐   ┌────────────────┐   ┌───────────────┐
+│  입력 이미지  │─▶│  1. 카메라/방 기하  │─▶│  2. 세그멘테이션  │─▶│ 3. 장면 그래프  │
+│  (+ EXIF)   │   │  소실점·바닥평면    │   │  물체 cutout    │   │  (JSON 모델)   │
+└─────────────┘   └──────────────────┘   └────────────────┘   └───────┬───────┘
+                                                                      │
+                          ┌───────────────────────────────────────────┘
+                          ▼
+                   ┌──────────────┐   ┌──────────────────┐   ┌─────────────┐
+                   │ 4. 편집 UI    │─▶│ 5. 합성/렌더러      │─▶│  결과 이미지  │
+                   │ 드래그·회전    │   │ 인페인트·그림자·가림 │   │  / 저장 파일  │
+                   └──────────────┘   └──────────────────┘   └─────────────┘
+```
+
+---
+
+## 3. 파이프라인 상세
+
+### 3.1 입력 & 카메라 보정 (`calibration/`)
+- 입력: RGB 사진 1장. EXIF에서 초점거리/센서 정보 읽기(있으면).
+- 카메라 내부 파라미터(intrinsics) 추정:
+  - EXIF 기반 근사, 또는
+  - 소실점 3개(vanishing points)로부터 초점거리·주점 추정.
+- 수동 보정: 사용자가 방의 바닥 사각형 코너 4점을 클릭 (fallback, 항상 제공).
+- 출력: `CameraModel { K(3x3), image_size, camera_height(가정 or 추정) }`
+
+### 3.2 방 기하 추정 (`geometry/`)
+- 맨해튼 월드 가정(서로 직교하는 3방향).
+- 에지 검출(`cv2.Canny`) → 선분 검출(`cv2.HoughLinesP` 또는 `cv2.createLineSegmentDetector`) → 방향별 클러스터링 → 소실점.
+- 바닥 평면(floor plane) 정의: 카메라 좌표계에서 `n·X + d = 0`.
+- 벽 평면: 바닥 경계선 + 수직 소실점으로 근사.
+- **바닥 호모그래피 `H`**: 이미지의 바닥 픽셀 ↔ 탑다운(top-down) 미터 좌표.
+  - 사용자가 클릭한 4점이 실제 직사각형(치수 입력 or 정사각 타일 가정)이라고 보고 `cv2.getPerspectiveTransform`으로 계산.
+- 출력: `RoomModel { floor_plane, wall_planes[], H (floor homography), H_inv }`
+
+### 3.3 물체 세그멘테이션 (`segmentation/`)
+- **1순위(경량, 기본): `cv2.grabCut`**
+  - 사용자가 물체 주위에 바운딩 박스를 그림 → 반복 그랩컷 → 마스크.
+  - 브러시로 전경/배경 힌트 추가 수정(`GC_FGD`, `GC_BGD`).
+- 후처리: 모폴로지 정리, 최대 연결요소 선택, 알파 페더링(가장자리 부드럽게).
+- 출력: `ObjectCutout { rgba (H×W×4), src_bbox, base_line (바닥 접촉선) }`
+- **이후 단계 옵션**: SAM(원클릭), YOLOv8-seg(자동 인스턴스). `segmentation/backends/`로 플러그인화.
+
+### 3.4 물체의 3D(바닥) 위치 추정 (`geometry/place.py`)
+- 가정: 물체의 밑면이 바닥에 닿아 있다.
+- cutout 마스크의 **최하단 픽셀(base line)** 을 바닥 평면으로 역투영 → 바닥 좌표 `X0`.
+- 물체 폭/높이(픽셀) + 바닥 호모그래피의 국소 스케일로 실제 크기 근사.
+- 출력: `Placement { floor_xy, yaw, scale, foot_offset }`
+
+### 3.5 장면 그래프 (`scene/`)
+- 방 + 물체들을 하나의 직렬화 가능한 모델로 관리.
+
+```jsonc
+// scene.json (예시)
+{
+  "version": 1,
+  "image": "data/input/room01.jpg",
+  "camera": { "K": [[..],[..],[..]], "image_size": [4032, 3024], "height_m": 1.4 },
+  "room": {
+    "floor_homography": [[..],[..],[..]],   // 이미지 px -> 바닥 m
+    "walls": [ { "plane": [nx, ny, nz, d] } ]
+  },
+  "objects": [
+    {
+      "id": "sofa_1",
+      "source": "cutout",                    // 원본 방에서 잘라냄
+      "asset": "data/output/cutouts/sofa_1.png",
+      "original_floor_xy": [1.2, 2.4],
+      "placement": { "floor_xy": [0.6, 2.0], "yaw_deg": 15, "scale": 1.0 },
+      "z_order_hint": null                    // null이면 깊이로 자동 정렬
+    },
+    {
+      "id": "newchair_1",
+      "source": "external",                   // 외부에서 불러온 새 가구
+      "asset": "data/assets/chair_ikea.png",
+      "footprint_m": [0.6, 0.6],
+      "placement": { "floor_xy": [2.1, 1.5], "yaw_deg": 0, "scale": 1.0 }
+    }
+  ],
+  "background": "data/output/room01_inpainted.jpg"  // 잘라낸 자리 메운 배경
+}
+```
+
+### 3.6 합성 / 렌더러 (`compositing/`)
+- **배경 인페인팅** (`inpaint.py`): 원본에서 물체를 들어낸 마스크 영역을 채움.
+  - 기본: `cv2.inpaint` (Telea / NS).
+  - 옵션: `simple-lama-inpainting` (품질↑, torch 필요).
+- **원근 크기 보정** (`renderer.py`):
+  - 새 바닥 좌표 `X'` → 밑면 픽셀 `p' = H⁻¹ X'`.
+  - 스케일 = (`X'`에서 앞으로 1m 이동한 점의 픽셀 거리) / (원래 위치에서의 픽셀 거리).
+  - 즉 호모그래피의 국소 야코비안 비율로 크기 조정.
+- **소프트 그림자** (`shadow.py`): 바닥 평면에 눌린 타원/마스크 블롭 → 블러 → 곱하기 합성.
+- **가림(occlusion) 처리**:
+  - 물체를 카메라로부터의 바닥 깊이 순으로 정렬(먼 것부터).
+  - 벽은 항상 뒤. `z_order_hint`가 있으면 우선.
+- **원근 워프**(선택): 스프라이트를 바닥 호모그래피로 살짝 기울여 2.5D 느낌.
+- 출력: 합성 결과 이미지(PNG/JPG), 레이어별 디버그 뷰.
+
+### 3.7 3D 뷰어 내보내기 (이후 단계, `viewer3d/`)
+- 방을 텍스처 입힌 박스(bWox)로, 물체를 바닥 위 평면(billboard)으로 근사.
+- three.js 씬(JSON + glTF) 또는 `trimesh`/`pyrender`로 오프라인 렌더.
+- 궤도 회전 가능한 "인테리어 게임" 뷰.
+
+---
+
+## 4. 사용자 인터페이스 (`ui/`)
+
+### 4.1 1단계 (프리뷰): OpenCV 창
+- 마우스로 코너 클릭, 박스 드로잉, 물체 드래그.
+- 최소 기능으로 파이프라인 검증.
+
+### 4.2 2단계: PyQt / PySide6 편집기
+- 좌: 캔버스(방 이미지 + 배치된 물체, 드래그·회전·스케일 핸들).
+- 우: 물체 목록, 속성 패널(위치 m, yaw, scale), 그림자/가림 토글.
+- 상단: 이미지 열기, 방 보정, 물체 추가(그랩컷), 새 가구 불러오기, 저장/불러오기, 내보내기.
+- 바닥 그리드 오버레이(1m 격자)로 배치 감각 제공.
+
+---
+
+## 5. 기술 스택 & 의존성
+
+### 5.1 필수 (경량)
+| 목적 | 패키지 |
+|---|---|
+| 영상처리·그랩컷·호모그래피·인페인트 | `opencv-python`, `opencv-contrib-python` |
+| 수치연산 | `numpy`, `scipy` |
+| 이미지 IO / EXIF | `Pillow` |
+| UI | `PySide6` |
+| 시각화/디버그 | `matplotlib` |
+| 설정 | `pydantic` (scene 모델 검증) |
+
+### 5.2 선택 (이후 단계, extras)
+| 목적 | 패키지 |
+|---|---|
+| 원클릭 세그멘테이션 | `segment-anything`, `torch`, `torchvision` |
+| 자동 인스턴스 세그 | `ultralytics` (YOLOv8-seg) |
+| 고품질 인페인트 | `simple-lama-inpainting` |
+| 방 레이아웃 자동 추정 | HorizonNet / LSUN 계열 (torch) |
+| 3D 렌더 | `trimesh`, `pyrender`, `open3d` |
+
+> extras는 `requirements-ml.txt` 로 분리. 기본 설치에는 torch 미포함.
+
+---
+
+## 6. 폴더 구조
+
+```
+room-redesign/
+├── README.md
+├── LICENSE
+├── .gitignore
+├── requirements.txt              # 경량 필수
+├── requirements-ml.txt           # 선택(딥러닝) extras
+├── pyproject.toml
+├── docs/
+│   ├── DESIGN.md                 # (이 문서)
+│   └── images/                   # 다이어그램/스크린샷
+├── data/
+│   ├── input/                    # 방 원본 사진 (git 제외)
+│   ├── assets/                   # 새 가구 PNG (git 제외)
+│   └── output/                   # cutout / inpaint / 결과 (git 제외)
+├── src/
+│   └── room_redesign/
+│       ├── __init__.py
+│       ├── config.py
+│       ├── io_utils.py
+│       ├── calibration/
+│       │   ├── __init__.py
+│       │   ├── exif.py
+│       │   ├── vanishing_points.py
+│       │   └── camera.py
+│       ├── geometry/
+│       │   ├── __init__.py
+│       │   ├── room_layout.py
+│       │   ├── homography.py
+│       │   └── place.py
+│       ├── segmentation/
+│       │   ├── __init__.py
+│       │   ├── grabcut.py
+│       │   └── backends/         # sam.py, yolo.py (이후)
+│       ├── scene/
+│       │   ├── __init__.py
+│       │   ├── model.py          # pydantic 스키마
+│       │   └── graph.py          # 저장/불러오기, 정렬
+│       ├── compositing/
+│       │   ├── __init__.py
+│       │   ├── inpaint.py
+│       │   ├── shadow.py
+│       │   └── renderer.py
+│       ├── viewer3d/             # 이후 단계
+│       │   └── web_export.py
+│       └── ui/
+│           ├── __init__.py
+│           ├── preview_cv.py     # 1단계 OpenCV
+│           ├── app.py            # 2단계 PySide6
+│           └── canvas.py
+├── scripts/
+│   ├── 01_calibrate.py
+│   ├── 02_segment.py
+│   ├── 03_build_scene.py
+│   └── 04_edit.py
+└── tests/
+    ├── test_homography.py
+    ├── test_place.py
+    ├── test_scene_model.py
+    └── data/                     # 작은 합성 테스트 이미지
+```
+
+---
+
+## 7. 핵심 알고리즘 메모
+
+### 7.1 바닥 호모그래피
+- 사용자가 바닥의 직사각형 4점 `p_i`(이미지 px)를 클릭, 대응하는 실제 좌표 `P_i`(미터, 탑다운) 지정
+  (예: 바닥 타일 한 칸 0.6m, 또는 러그 실측 130×90cm).
+- `H = getPerspectiveTransform(P_world, p_image)` → 미터→픽셀.
+- `H_inv` → 픽셀→미터. 바닥 위 점만 유효.
+
+### 7.2 픽셀 역투영(바닥 접촉점)
+- cutout 마스크 하단 중앙 픽셀 `p_base` → `X_floor = normalize(H_inv · [u, v, 1])`.
+
+### 7.3 원근 스케일 계수
+```
+s(X') = || H·(X' + forward·1m) − H·X' ||_px  ÷  || H·(X0 + forward·1m) − H·X0 ||_px
+```
+- `X0`: 원래 바닥 위치, `X'`: 새 위치, `forward`: 카메라를 향하는 바닥 방향의 단위벡터.
+- 스프라이트 크기 = 원본 픽셀 크기 × `s(X') × placement.scale`.
+
+### 7.4 깊이 정렬 가림
+- 각 물체의 대표 깊이 = 카메라 원점에서 `X_floor`까지 유클리드 거리(또는 카메라 광축 투영).
+- 내림차순(먼 것부터) 합성. 벽/배경은 맨 뒤.
+
+### 7.5 그림자
+- 바닥에 놓인 물체 footprint(타원 근사)를 `H`로 픽셀에 워프 → 가우시안 블러 → 40~60% 불투명 곱하기.
+- 광원 방향은 기본값(위-뒤) 파라미터로, 그림자 오프셋 조정 슬라이더 제공.
+
+---
+
+## 8. 개발 단계 (마일스톤)
+
+| 단계 | 내용 | 완료 기준 |
+|---|---|---|
+| **M0** | 리포 스캐폴드, 설계도, 환경설정 | `pip install -r requirements.txt` 성공, `pytest` 통과(빈 테스트) |
+| **M1** | 이미지 로드 + 바닥 코너 4점 클릭 → 호모그래피 → 바닥 1m 그리드 오버레이 | 그리드가 바닥에 원근 맞게 그려짐 |
+| **M2** | GrabCut으로 물체 1개 잘라내기 + 배경 인페인팅 | RGBA cutout 저장, 구멍이 티 안 나게 메워짐 |
+| **M3** | cutout을 바닥 위에 배치, 드래그 이동 + 원근 스케일 + 그림자 | 앞으로 끌면 커지고 뒤로 끌면 작아짐 |
+| **M4** | 장면 그래프 JSON 저장/불러오기, 다물체 + 깊이 정렬 가림 | scene.json 왕복, 겹칠 때 앞뒤 정확 |
+| **M5** | PySide6 편집 UI (속성 패널, 물체 목록, 내보내기) | 마우스만으로 재배치 가능 |
+| **M6** | 외부 가구 PNG 불러와 footprint 지정 후 배치 | 새 가구가 방 원근에 맞게 배치됨 |
+| **M7** (옵션) | SAM 원클릭 세그 백엔드 | 클릭 한 번으로 물체 분리 |
+| **M8** (옵션) | three.js 3D 뷰어 내보내기 | 브라우저에서 방 궤도 회전 |
+
+---
+
+## 9. 리스크 & 대응
+
+| 리스크 | 영향 | 대응 |
+|---|---|---|
+| 단일 이미지 3D 모호성 | 배치 부정확 | 맨해튼 가정 + 수동 코너/치수 입력을 항상 제공 |
+| 그랩컷 경계 품질 | cutout 지저분 | 브러시 수정 UI, 알파 페더링, (이후) SAM |
+| 인페인팅 아티팩트 | 배경 어색 | 작은 물체부터, patch 반경 조정, (이후) LaMa |
+| 2.5D 한계(측면·상단 왜곡) | 사실감 저하 | "계획용" 목적 명시, 원근 워프 강도 조절 |
+| torch 무게 | 설치 부담 | 기본 설치에서 제외, extras로 분리 |
+| PySide6 배포/환경 | 실행 실패 | 1단계 OpenCV 프리뷰를 항상 유지 |
+
+---
+
+## 10. 다음 액션
+1. 이 설계도 검토·수정.
+2. GitHub 빈 저장소 URL 받기 → `git remote add origin` → 최초 푸시.
+3. M0 스캐폴드 확정 후 **M1(바닥 호모그래피 + 그리드)** 부터 구현 시작.

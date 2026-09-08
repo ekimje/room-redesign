@@ -1,0 +1,9 @@
+# 경량 필수 의존성 (딥러닝 미포함) — DESIGN.md 5.1
+numpy>=1.26
+scipy>=1.11
+opencv-python>=4.9
+opencv-contrib-python>=4.9
+Pillow>=10.2
+pydantic>=2.6
+matplotlib>=3.8
+PySide6>=6.6
