@@ -5,5 +5,6 @@
 """
 
 from .preview_cv import run_calibrator
+from .segment_cv import run_segmenter
 
-__all__ = ["run_calibrator"]
+__all__ = ["run_calibrator", "run_segmenter"]

@@ -265,7 +265,9 @@ room-redesign/
 │       │   └── fit.py              # 수용 가능성 판정
 │       ├── segmentation/
 │       │   ├── __init__.py
-│       │   ├── grabcut.py
+│       │   ├── grabcut.py        # 박스/스크리블 GrabCut
+│       │   ├── mask_ops.py       # 모폴로지·최대CC·페더·bbox·바닥접촉점
+│       │   ├── cutout.py         # ObjectCutout + PNG 저장/불러오기
 │       │   └── backends/         # sam.py, yolo.py (이후)
 │       ├── scene/
 │       │   ├── __init__.py
@@ -335,7 +337,7 @@ s(X') = || H·(X' + forward·1m) − H·X' ||_px  ÷  || H·(X0 + forward·1m) �
 | **M0** | 리포 스캐폴드, 설계도, 환경설정 | `pip install -r requirements.txt` 성공, `pytest` 통과(빈 테스트) |
 | **M1** | 이미지 로드 + 바닥 코너 4점 클릭 → 호모그래피 → 바닥 1m 그리드 오버레이 | 그리드가 바닥에 원근 맞게 그려짐 |
 | **M1.5** | 스케일 기준 입력 → 바닥 면적 계산 + 몬테카를로 오차범위 | 합성 테스트 이미지에서 참값 대비 오차 ±15% 이내, `값 ± σ` 출력 |
-| **M2** | GrabCut으로 물체 1개 잘라내기 + 배경 인페인팅 | RGBA cutout 저장, 구멍이 티 안 나게 메워짐 |
+| **M2** | GrabCut으로 물체 1개 잘라내기 + 배경 인페인팅 | RGBA cutout 저장, 구멍이 티 안 나게 메워짐 ✔ (Telea 기본, 큰 평면은 LaMa 권장) |
 | **M3** | cutout을 바닥 위에 배치, 드래그 이동 + 원근 스케일 + 그림자 | 앞으로 끌면 커지고 뒤로 끌면 작아짐 |
 | **M4** | 장면 그래프 JSON 저장/불러오기, 다물체 + 깊이 정렬 가림 | scene.json 왕복, 겹칠 때 앞뒤 정확 |
 | **M5** | PySide6 편집 UI (속성 패널, 물체 목록, 내보내기) | 마우스만으로 재배치 가능 |

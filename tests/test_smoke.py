@@ -8,6 +8,8 @@ def test_package_imports():
 
 
 def test_core_modules_import():
-    from room_redesign import geometry, scene  # noqa: F401
+    from room_redesign import compositing, geometry, scene, segmentation  # noqa: F401
     from room_redesign.geometry import solve_floor_homography  # noqa: F401
     from room_redesign.scene import Scene  # noqa: F401
+    from room_redesign.segmentation import grabcut_rect, make_cutout  # noqa: F401
+    from room_redesign.compositing import inpaint  # noqa: F401
